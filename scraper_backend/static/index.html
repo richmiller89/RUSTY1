@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Rust Website Watcher</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        .tab-content { display: none; padding: 1rem; }
+        .tab-content.active { display: block; }
+        section { padding: 1rem; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f4f4f4; }
+        .status-OK { color: green; font-weight: bold; }
+        .status-ERROR { color: red; font-weight: bold; }
+        .nav-link { 
+            text-decoration: none; 
+            color: #333; 
+            padding: 8px 15px; 
+            border-radius: 4px;
+        }
+        .nav-link.active {
+            background: #4CAF50;
+            color: white;
+        }
+        #feed {
+            max-height: 700px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            background: #f5f5f5;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.05);
+        }
+        #feed li {
+            list-style-type: none;
+        }
+        #feed {
+            padding-left: 0;  /* Remove default list padding */
+        }
+        .action-button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+    <script>
+        function formatTimestamp(timestamp) {
+            if (!timestamp) return '';
+            // Format to a more readable timestamp
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString();
+        }
+    </script>
+</head>
+<body>
+<h1 style="padding:1rem;background:#222;color:#fff;">Rust Website Watcher</h1>
+
+<!-- Navigation Tabs -->
+<div style="background:#f0f0f0;padding:10px;">
+    <ul style="list-style:none;padding:0;margin:0;display:flex;gap:20px;">
+        <li><a href="#" class="nav-link active" data-tab="updates-tab">Live Updates</a></li>
+        <li><a href="#" class="nav-link" data-tab="sites-tab">Monitored Sites</a></li>
+        <li><a href="#" class="nav-link" data-tab="config-tab">Configuration</a></li>
+    </ul>
+</div>
+
+<!-- Updates Tab (Default Active) -->
+<section id="updates-tab" class="tab-content active">
+    <h2>Live Updates</h2>
+    <div style="margin-bottom:20px;">
+        <span style="font-size:0.9em;color:#666;">Site updates will appear below as they happen</span>
+    </div>
+    <ul id="feed"></ul>
+</section>
+
+<!-- Sites Tab -->
+<section id="sites-tab" class="tab-content">
+    <h2>Monitored Sites</h2>
+    <div style="margin-bottom:15px;">
+        <button onclick="resetDb()" style="background:#ff5722;color:white;padding:8px 15px;border:none;border-radius:4px;cursor:pointer;">
+            Reset Database
+        </button>
+        <span style="margin-left:10px;font-size:0.9em;color:#666;">Use only if you're having trouble deleting sites</span>
+    </div>
+    <table id="siteTable" style="margin-bottom:20px;">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>URL</th>
+                <th>Status</th>
+                <th>Last Check</th>
+                <th>Last Update</th>
+                <th>Settings</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</section>
+
+<!-- Config Tab -->
+<section id="config-tab" class="tab-content">
+    <h2>Add New Site</h2>
+    <div style="background:#f8f8f8;padding:20px;border-radius:8px;max-width:600px;">
+        <div style="margin-bottom: 15px;">
+            <label style="display:block;margin-bottom:5px;font-weight:bold;">URL:</label>
+            <input id="url" placeholder="https://example.com" style="width:100%;padding:8px;box-sizing:border-box;"/>
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display:block;margin-bottom:5px;font-weight:bold;">Interval (seconds):</label>
+            <input id="interval" type="number" min="1" max="3000" value="5" style="width:100%;padding:8px;box-sizing:border-box;"/>
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display:block;margin-bottom:5px;font-weight:bold;">Scraping Style:</label>
+            <select id="style" style="width:100%;padding:8px;box-sizing:border-box;">
+                <option value="random">Random (with jitter)</option>
+                <option value="exponential">Exponential backoff</option>
+                <option value="none">None (fixed interval)</option>
+            </select>
+        </div>
+        <button onclick="addSite()" style="background:#4CAF50;color:white;padding:10px 15px;border:none;border-radius:4px;cursor:pointer;">Add Site</button>
+    </div>
+</section>
+<script>
+async function loadSites(){
+    const res = await fetch('/api/sites');
+    const data = await res.json();
+    const tbody = document.querySelector('#siteTable tbody');
+    tbody.innerHTML='';
+    data.forEach(s=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML=`
+            <td>${s.id}</td>
+            <td><a href="${s.url}" target="_blank">${s.url}</a></td>
+            <td class="status-${s.status}">${s.status||'Pending'}</td>
+            <td>${formatTimestamp(s.last_checked) || 'Not checked yet'}</td>
+            <td>${formatTimestamp(s.last_updated) || 'No updates yet'}</td>
+            <td>
+                <div>Interval: ${s.interval_secs}s</div>
+                <div>Style: ${s.style}</div>
+            </td>
+            <td>
+                <button onclick="delSite(${s.id})" style="background:#f44336;color:white;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;">Delete</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    })
+}
+// Tab switching functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const navLinks = document.querySelectorAll('.nav-link');
+    
+    navLinks.forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            
+            // Remove active class from all tabs and links
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            navLinks.forEach(navLink => navLink.classList.remove('active'));
+            
+            // Add active class to clicked tab and link
+            const tabId = this.getAttribute('data-tab');
+            document.getElementById(tabId).classList.add('active');
+            this.classList.add('active');
+        });
+    });
+});
+
+async function addSite(){
+    const url = document.getElementById('url').value;
+    if(!url) return;
+    
+    const interval_secs = parseInt(document.getElementById('interval').value, 10);
+    const style = document.getElementById('style').value;
+    
+    await fetch('/api/sites',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+            url,
+            interval_secs,
+            style
+        })
+    });
+    
+    document.getElementById('url').value='';
+    document.getElementById('interval').value='5';
+    document.getElementById('style').value='random';
+    
+    // Show a success message
+    alert(`Site added: ${url}`);
+    
+    // Switch to the sites tab
+    document.querySelector('[data-tab="sites-tab"]').click();
+    
+    loadSites();
+}
+
+// Not needed anymore - default sites are added by the backend
+
+async function delSite(id){
+    if (confirm("Are you sure you want to delete this site?")) {
+        try {
+            const response = await fetch('/api/sites/'+id, {method:'DELETE'});
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error(`Failed to delete site ${id}. Server response:`, response.status, errorText);
+                alert(`Failed to delete site (ID: ${id}). Status: ${response.status}. Error: ${errorText || 'Unknown error'}`);
+            } else {
+                console.log(`Successfully deleted site ${id}`);
+            }
+            loadSites();
+        } catch (error) {
+            console.error(`Error deleting site ${id}:`, error);
+            alert(`Error deleting site (ID: ${id}): ${error.message}`);
+        }
+    }
+}
+
+async function resetDb() {
+    if (confirm("WARNING: This will delete ALL sites and updates from the database. This action cannot be undone. Are you sure you want to continue?")) {
+        try {
+            const response = await fetch('/api/reset-db');
+            const result = await response.text();
+            if (response.ok) {
+                alert("Database reset successfully. All sites have been removed.");
+            } else {
+                alert(`Error: ${result}`);
+            }
+            loadSites();
+        } catch (error) {
+            console.error("Error resetting database:", error);
+            alert(`Error resetting database: ${error.message}`);
+        }
+    }
+}
+
+// Initial load
+loadSites();
+setInterval(loadSites, 5000); // Refresh site list every 5 seconds
+
+// SSE for real-time updates
+const evt=new EventSource('/api/updates/stream');
+evt.onmessage=e=>{
+    const obj=JSON.parse(e.data);
+    const li=document.createElement('li');
+    const timestamp = formatTimestamp(obj.timestamp);
+    
+    // Add style to the list item
+    li.style.marginBottom = '18px';
+    li.style.padding = '15px';
+    li.style.backgroundColor = '#ffffff';
+    li.style.borderRadius = '8px';
+    li.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)';
+    li.style.borderLeft = '4px solid #4CAF50';
+    li.style.transition = 'all 0.2s ease';
+    
+    // Add hover effect
+    li.onmouseover = function() {
+        this.style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)';
+    };
+    
+    li.onmouseout = function() {
+        this.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)';
+    };
+    
+    // Generate URL display text (shortening if needed)
+    const displayUrl = obj.url.length > 60 ? obj.url.substring(0, 57) + '...' : obj.url;
+    
+    li.innerHTML=`
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <strong style="color: #1a73e8;">[${timestamp}]</strong>
+            <span style="color: #666; font-size: 0.9em;">Updated</span>
+        </div>
+        <div style="margin-bottom: 10px;">
+            <a href="${obj.url}" target="_blank" style="color: #0f9d58; text-decoration: none; font-weight: 500; word-break: break-all;">${displayUrl}</a>
+        </div>
+        <div style="margin-top: 8px; padding: 12px; background: #f9f9f9; border-radius: 6px; font-size: 0.92em; white-space: pre-wrap; line-height: 1.5; max-height: 350px; overflow-y: auto; border-left: 4px solid #4CAF50; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+            ${obj.content_preview}
+        </div>
+    `;
+    
+    document.getElementById('feed').prepend(li);
+    
+    // Flash the tab to draw attention if not active
+    if (!document.getElementById('updates-tab').classList.contains('active')) {
+        const link = document.querySelector('[data-tab="updates-tab"]');
+        link.style.animation = 'flash 1s 3';
+    }
+    
+    loadSites();
+};
+
+// Add a little animation for tab flashing
+document.head.insertAdjacentHTML('beforeend', `
+<style>
+@keyframes flash {
+    0% { background-color: #4CAF50; }
+    50% { background-color: #FFC107; }
+    100% { background-color: #4CAF50; }
+}
+</style>
+`);
+</script>
+</body>
+</html>

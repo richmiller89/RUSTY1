@@ -1,0 +1,3 @@
+[workspace]
+members = ["scraper_backend", "init_db"]
+resolver = "2"

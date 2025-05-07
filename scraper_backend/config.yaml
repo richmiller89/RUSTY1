@@ -1,0 +1,5 @@
+# Use an absolute path to the database file to ensure consistency
+database_url: "sqlite:../scraper.db"
+update_cache_size: 5
+default_interval_secs: 1
+interval_jitter_max_ms: 1500

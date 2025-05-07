@@ -1,0 +1,8 @@
+[package]
+name = "init_db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
+tokio = { version = "1.38", features = ["full"] }
