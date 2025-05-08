@@ -41,6 +41,7 @@ struct UpdateMessage {
     timestamp: DateTime<Utc>,
     diff_hash: String,
     content_preview: String,
+    has_full_content: bool,
 }
 
 #[derive(Deserialize)]
@@ -244,6 +245,38 @@ async fn add_default_sites(pool: &SqlitePool) {
 }
 
 // Emergency reset endpoint to help with site deletion issues
+async fn get_full_content(data: web::Data<AppState>, path: web::Path<(i64, String)>) -> impl Responder {
+    let (site_id, timestamp) = path.into_inner();
+    
+    // Parse the timestamp
+    let timestamp = DateTime::parse_from_rfc3339(&timestamp)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    
+    // Fetch the content from the database
+    let content = sqlx::query!(
+        "SELECT content FROM updates WHERE site_id = ?1 AND timestamp = ?2 LIMIT 1",
+        site_id,
+        timestamp
+    )
+    .fetch_optional(&data.pool)
+    .await;
+    
+    match content {
+        Ok(Some(record)) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "content": record.content
+            }))
+        },
+        Ok(None) => {
+            HttpResponse::NotFound().body("Content not found")
+        },
+        Err(e) => {
+            HttpResponse::InternalServerError().body(format!("Database error: {}", e))
+        }
+    }
+}
+
 async fn reset_db(data: web::Data<AppState>) -> impl Responder {
     println!("Emergency database reset requested");
     
@@ -404,6 +437,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/api/sites/{id}").route(web::delete().to(delete_site)))
             .service(web::resource("/api/updates/stream").route(web::get().to(sse_updates)))
             .service(web::resource("/api/reset-db").route(web::get().to(reset_db)))
+            .service(web::resource("/api/content/{site_id}/{timestamp}").route(web::get().to(get_full_content)))
             .service(Files::new("/", "./static").index_file("index.html"))
     })
     .bind(("0.0.0.0", 8080))?

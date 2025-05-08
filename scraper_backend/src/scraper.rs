@@ -92,9 +92,12 @@ async fn check_site(site: Site, pool: Pool<Sqlite>, tx: Sender<UpdateMessage>, s
     
     if let Ok(resp) = body_res {
         if let Ok(body) = resp.text().await {
-            // hash compare
+            // Pre-process content to remove volatile elements before hashing
+            let cleaned_content = clean_content_for_comparison(&body);
+            
+            // Hash the cleaned content
             let mut hasher = Sha256::new();
-            hasher.update(body.as_bytes());
+            hasher.update(cleaned_content.as_bytes());
             let hash = format!("{:x}", hasher.finalize());
 
             let last_hash: Option<(String,)> = sqlx::query_as("SELECT diff_hash FROM updates WHERE site_id = ?1 ORDER BY id DESC LIMIT 1")
@@ -106,45 +109,21 @@ async fn check_site(site: Site, pool: Pool<Sqlite>, tx: Sender<UpdateMessage>, s
 
             let changed = last_hash.map_or(true, |h| h.0 != hash);
 
-            // update last_checked
+            // Update last_checked
             sqlx::query!("UPDATE sites SET last_checked = ?1, status = 'OK' WHERE id = ?2", fetched_at, site.id)
                 .execute(&pool)
                 .await
                 .unwrap();
 
-            if changed {
-                // Insert new update
-                sqlx::query!("INSERT INTO updates(site_id, timestamp, diff_hash, content) VALUES (?1, ?2, ?3, ?4)",
-                    site.id, fetched_at, hash, body)
-                    .execute(&pool)
-                    .await
-                    .unwrap();
-
-                // Limit the number of updates stored per site based on config
-                // Get the update_cache_size from config
-                let update_cache_size = config.update_cache_size;
-                
-                // Delete older updates beyond the cache size
-                sqlx::query!(
-                    "DELETE FROM updates WHERE id IN (
-                        SELECT id FROM updates 
-                        WHERE site_id = ?1 
-                        ORDER BY id DESC 
-                        LIMIT -1 OFFSET ?2
-                    )",
-                    site.id,
-                    update_cache_size
-                )
+            // Store every fetch in the database regardless of change
+            sqlx::query!("INSERT INTO updates(site_id, timestamp, diff_hash, content) VALUES (?1, ?2, ?3, ?4)",
+                site.id, fetched_at, hash, body)
                 .execute(&pool)
                 .await
                 .unwrap();
 
-                // Update last_updated timestamp
-                sqlx::query!("UPDATE sites SET last_updated = ?1 WHERE id = ?2", fetched_at, site.id)
-                    .execute(&pool)
-                    .await
-                    .unwrap();
-
+            // Only notify UI if content meaningfully changed
+            if changed {
                 // Extract and format a better content preview
                 let content_preview = extract_formatted_preview(&body, 400);
                 
@@ -155,8 +134,31 @@ async fn check_site(site: Site, pool: Pool<Sqlite>, tx: Sender<UpdateMessage>, s
                     timestamp: fetched_at,
                     diff_hash: hash,
                     content_preview,
+                    has_full_content: true,
                 });
+                
+                // Update last_updated timestamp
+                sqlx::query!("UPDATE sites SET last_updated = ?1 WHERE id = ?2", fetched_at, site.id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
             }
+            
+            // Limit the number of updates stored per site based on config
+            let update_cache_size = config.update_cache_size;
+            sqlx::query!(
+                "DELETE FROM updates WHERE id IN (
+                    SELECT id FROM updates 
+                    WHERE site_id = ?1 
+                    ORDER BY id DESC 
+                    LIMIT -1 OFFSET ?2
+                )",
+                site.id,
+                update_cache_size
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
         } else {
             success = false;
         }
@@ -284,7 +286,8 @@ fn extract_html_preview(html: &str, max_length: usize) -> String {
     // Try various content selectors by priority
     let content_selectors = [
         "article", "main", ".content", "#content", ".post-content", 
-        ".entry-content", ".article-content", ".post", "p"
+        ".entry-content", ".article-content", ".post", "p",
+        ".news-article", ".article__content", ".story-body", ".story__content"
     ];
     
     for selector_str in content_selectors {
@@ -321,8 +324,6 @@ fn extract_html_preview(html: &str, max_length: usize) -> String {
                     .to_string();
                 
                 content_text = normalize_whitespace(&content_text);
-                
-                // Remove common JavaScript snippets that often appear
                 content_text = clean_script_content(&content_text);
             }
         }
@@ -331,8 +332,8 @@ fn extract_html_preview(html: &str, max_length: usize) -> String {
     // Add content preview with length limit
     if !content_text.is_empty() {
         let content_preview = if content_text.len() > max_length {
-            // Try to cut at a word boundary
-            let cutoff = find_word_boundary(&content_text, max_length);
+            // Try to cut at a sentence boundary if possible
+            let cutoff = find_sentence_boundary(&content_text, max_length);
             format!("{}...", &content_text[..cutoff])
         } else {
             content_text
@@ -597,4 +598,87 @@ fn find_word_boundary(text: &str, max_length: usize) -> usize {
     
     // If no good break found, just use the max_length
     max_length
+}
+
+// Add this new function to clean content before comparing (for better delta detection)
+fn clean_content_for_comparison(content: &str) -> String {
+    // Step 1: Remove common dynamic elements
+    let mut cleaned = content.to_string();
+    
+    // Remove timestamps, dates, and common dynamic patterns
+    let patterns_to_remove = [
+        r"\d{1,2}:\d{2}:\d{2}",                      // Time (HH:MM:SS)
+        r"\d{1,2}:\d{2}",                           // Time (HH:MM)
+        r"\d{1,2}/\d{1,2}/\d{2,4}",                 // Date (MM/DD/YYYY)
+        r"\d{4}-\d{2}-\d{2}",                       // ISO date (YYYY-MM-DD)
+        r"[A-Za-z]{3},\s\d{1,2}\s[A-Za-z]{3}\s\d{4}", // Day, DD Mon YYYY
+        r"viewcount[\"']?\s*:\s*[\"']?\d+",         // View counts
+        r"[\"']timestamp[\"']\s*:\s*\d+",           // Timestamps in JSON
+        r"data-timestamp=[\"']\d+[\"']",            // Data timestamps
+        r"<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>", // Scripts
+        r"<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>", // iframes
+        r"<!--.*?-->",                               // HTML comments
+        r"<ins\b[^<]*(?:(?!<\/ins>)<[^<]*)*<\/ins>", // Ad insertions
+    ];
+    
+    // Apply regex replacements
+    for pattern in patterns_to_remove {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            cleaned = re.replace_all(&cleaned, "").to_string();
+        }
+    }
+    
+    // Step 2: Optional - extract only the relevant content
+    // This depends on the website structure, but we can add a generic implementation
+    // For example, focus on main content areas and ignore headers, footers, sidebars
+    let content_selectors = [
+        r"<article.*?>(.*?)</article>",
+        r"<main.*?>(.*?)</main>",
+        r"<div.*?class=[\"\']content[\"\'].*?>(.*?)</div>",
+        r"<div.*?class=[\"\']post-content[\"\'].*?>(.*?)</div>",
+        r"<div.*?id=[\"\']content[\"\'].*?>(.*?)</div>",
+    ];
+    
+    let mut extracted_content = String::new();
+    for selector in content_selectors {
+        if let Ok(re) = regex::Regex::new(selector) {
+            if let Some(caps) = re.captures(&cleaned) {
+                if let Some(m) = caps.get(1) {
+                    extracted_content = m.as_str().to_string();
+                    break;
+                }
+            }
+        }
+    }
+    
+    // If we extracted specific content, use that; otherwise use the whole cleaned content
+    if !extracted_content.is_empty() {
+        cleaned = extracted_content;
+    }
+    
+    // Step 3: Normalize whitespace
+    normalize_whitespace(&cleaned)
+}
+
+// Add function to find sentence boundaries for better excerpt cutting
+fn find_sentence_boundary(text: &str, max_length: usize) -> usize {
+    if text.len() <= max_length {
+        return text.len();
+    }
+    
+    // Look for sentence-ending punctuation
+    let sentence_breaks = ['.', '!', '?', '\n', '\r'];
+    
+    // Start from max_length and go backwards
+    for i in (0..max_length).rev() {
+        if i < text.len() {
+            let c = text.chars().nth(i).unwrap();
+            if sentence_breaks.contains(&c) {
+                return i + 1; // Include the punctuation
+            }
+        }
+    }
+    
+    // Fall back to word boundary if no sentence break found
+    find_word_boundary(text, max_length)
 }

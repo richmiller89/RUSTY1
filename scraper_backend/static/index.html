@@ -271,16 +271,29 @@ evt.onmessage=e=>{
     // Generate URL display text (shortening if needed)
     const displayUrl = obj.url.length > 60 ? obj.url.substring(0, 57) + '...' : obj.url;
     
+    // Create a unique ID for the content viewer
+    const contentId = `content-${obj.site_id}-${Date.now()}`;
+    
     li.innerHTML=`
         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
             <strong style="color: #1a73e8;">[${timestamp}]</strong>
             <span style="color: #666; font-size: 0.9em;">Updated</span>
         </div>
-        <div style="margin-bottom: 10px;">
+        <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
             <a href="${obj.url}" target="_blank" style="color: #0f9d58; text-decoration: none; font-weight: 500; word-break: break-all;">${displayUrl}</a>
+            <div>
+                <button onclick="viewFullContent('${contentId}')" class="action-button" style="margin-right: 5px;">View Content</button>
+                <a href="${obj.url}" target="_blank" class="action-button">Open URL</a>
+            </div>
         </div>
         <div style="margin-top: 8px; padding: 12px; background: #f9f9f9; border-radius: 6px; font-size: 0.92em; white-space: pre-wrap; line-height: 1.5; max-height: 350px; overflow-y: auto; border-left: 4px solid #4CAF50; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
             ${obj.content_preview}
+        </div>
+        <div id="${contentId}" style="display: none; margin-top: 10px; padding: 12px; background: #f5f5f5; border-radius: 6px; font-family: monospace; max-height: 500px; overflow-y: auto; border: 1px solid #ddd;">
+            <div style="text-align: right; margin-bottom: 5px;">
+                <button onclick="closeFullContent('${contentId}')" class="action-button" style="background-color: #f44336;">Close</button>
+            </div>
+            <pre style="white-space: pre-wrap; word-break: break-all;"></pre>
         </div>
     `;
     
@@ -305,6 +318,51 @@ document.head.insertAdjacentHTML('beforeend', `
 }
 </style>
 `);
+
+// Add functions to view/hide full content
+function viewFullContent(id) {
+    const contentDiv = document.getElementById(id);
+    if (contentDiv) {
+        // If the content hasn't been loaded yet, fetch it
+        if (contentDiv.querySelector('pre').textContent.trim() === '') {
+            const siteId = id.split('-')[1];
+            const timestamp = id.split('-')[2];
+            
+            // Show loading indicator
+            contentDiv.querySelector('pre').textContent = 'Loading content...';
+            contentDiv.style.display = 'block';
+            
+            // Fetch the full content from the database
+            fetch(`/api/content/${siteId}/${timestamp}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Escape HTML entities to prevent XSS
+                    const escapeHtml = (html) => {
+                        return html
+                            .replace(/&/g, "&amp;")
+                            .replace(/</g, "&lt;")
+                            .replace(/>/g, "&gt;")
+                            .replace(/"/g, "&quot;")
+                            .replace(/'/g, "&#039;");
+                    };
+                    
+                    contentDiv.querySelector('pre').innerHTML = escapeHtml(data.content);
+                })
+                .catch(error => {
+                    contentDiv.querySelector('pre').textContent = 'Error loading content: ' + error.message;
+                });
+        } else {
+            contentDiv.style.display = 'block';
+        }
+    }
+}
+
+function closeFullContent(id) {
+    const contentDiv = document.getElementById(id);
+    if (contentDiv) {
+        contentDiv.style.display = 'none';
+    }
+}
 </script>
 </body>
 </html>
